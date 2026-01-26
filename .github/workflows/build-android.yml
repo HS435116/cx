@@ -179,13 +179,25 @@ jobs:
           retention-days: 30
           compression-level: 0
 
-      - name: Upload build logs on failure
+      - name: Debug info on failure (list build dirs)
+        if: failure()
+        run: |
+          echo "PWD=$(pwd)"
+          ls -la
+          echo "---- .buildozer (top) ----"
+          ls -la .buildozer || true
+          echo "---- find .buildozer (depth 5) ----"
+          find .buildozer -maxdepth 5 -type d -print || true
+
+      - name: Upload debug artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs
+          name: build-debug
+          if-no-files-found: ignore
           path: |
-            .buildozer/logs/
-            .buildozer/android/platform/build/dists/
+            .buildozer/**
+            bin/**
+            buildozer.spec
           retention-days: 7
           compression-level: 0
