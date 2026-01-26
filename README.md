@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 考勤系统 - Android APK构建项目
 
 ## 项目简介
@@ -39,3 +40,6 @@ buildozer android debug
 - 数据统计与导出
 - 管理员权限控制
 - 移动端适配
+=======
+# cx
+>>>>>>> e1cc8fd5df8b895a3a73bec8f36407a1031d1fe1
