@@ -97,7 +97,7 @@ android.release_keyalias_password = __ANDROID_KEY_ALIAS_PASSWORD__
 #android.copy_libs = 1
 
 # (list) Android architectures to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
-android.archs = arm64-v8a
+android.archs = arm64-v8a,armeabi-v7a
 
 #
 # Python for android (p4a) specific
