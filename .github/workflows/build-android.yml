@@ -122,19 +122,19 @@ jobs:
           chmod 600 .keystore/release.keystore
 
           python - <<'PY'
-import os
-from pathlib import Path
-spec = Path('buildozer.spec')
-text = spec.read_text(encoding='utf-8')
-repl = {
-  '__ANDROID_KEYSTORE_PASSWORD__': os.environ['ANDROID_KEYSTORE_PASSWORD'],
-  '__ANDROID_KEY_ALIAS__': os.environ['ANDROID_KEY_ALIAS'],
-  '__ANDROID_KEY_ALIAS_PASSWORD__': os.environ['ANDROID_KEY_ALIAS_PASSWORD'],
-}
-for k, v in repl.items():
-  text = text.replace(k, v)
-spec.write_text(text, encoding='utf-8')
-PY
+          import os
+          from pathlib import Path
+          spec = Path('buildozer.spec')
+          text = spec.read_text(encoding='utf-8')
+          repl = {
+            '__ANDROID_KEYSTORE_PASSWORD__': os.environ['ANDROID_KEYSTORE_PASSWORD'],
+            '__ANDROID_KEY_ALIAS__': os.environ['ANDROID_KEY_ALIAS'],
+            '__ANDROID_KEY_ALIAS_PASSWORD__': os.environ['ANDROID_KEY_ALIAS_PASSWORD'],
+          }
+          for k, v in repl.items():
+            text = text.replace(k, v)
+          spec.write_text(text, encoding='utf-8')
+          PY
 
       - name: Build Release (APK + AAB)
         run: |
