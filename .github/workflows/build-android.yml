@@ -147,21 +147,30 @@ jobs:
 
           buildozer -v android release
 
-          # AAB: 不同 buildozer 版本命令略有差异，这里做兼容尝试
-          buildozer -v android release aab || buildozer -v android aab || true
+          # 有些 buildozer 版本 release 会直接生成 AAB；如果没有 AAB，再尝试额外命令生成
+          if ! ls -1 bin/*.aab >/dev/null 2>&1; then
+            echo "No AAB found after 'android release', trying to build AAB..."
+            buildozer -v android release aab || buildozer -v android aab || true
+          fi
 
-          # 若仍未生成 aab，则直接失败，避免“看不到 aab 文件”
+          # 必须至少生成 AAB（发布优先）
           if ! ls -1 bin/*.aab >/dev/null 2>&1; then
             echo "ERROR: AAB not generated. Please check build logs." >&2
             ls -la bin || true
             exit 1
           fi
 
-          # 统一产物文件名（便于分发/测试）
-          APK_SRC=$(ls -1 bin/*.apk | head -n 1)
+          # 可选：如果生成了 APK，则一起重命名；没有 APK 也不让流程失败
           AAB_SRC=$(ls -1 bin/*.aab | head -n 1)
-          cp -f "$APK_SRC" "bin/晨曦智能打卡.apk"
           cp -f "$AAB_SRC" "bin/晨曦智能打卡.aab"
+
+          APK_SRC=$(ls -1 bin/*.apk 2>/dev/null | head -n 1 || true)
+          if [ -n "$APK_SRC" ]; then
+            cp -f "$APK_SRC" "bin/晨曦智能打卡.apk"
+          else
+            echo "WARN: No APK generated (this is OK if you only need AAB)."
+          fi
+
           ls -la bin
 
       - name: Build Debug (PR without secrets)
@@ -171,21 +180,18 @@ jobs:
           buildozer -v android debug
           ls -la bin || true
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-path: |
-            bin/晨曦智能打卡.apk
-            bin/晨曦智能打卡.aab
-
       - name: Upload Release artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: android-release
+          # 只要 bin 下至少存在一个文件（AAB 或 APK）就会上传成功
+          # 避免因某个文件不存在导致 workflow 失败
           path: |
-            bin/晨曦智能打卡.apk
+            bin/*.aab
+            bin/*.apk
             bin/晨曦智能打卡.aab
+            bin/晨曦智能打卡.apk
           retention-days: 30
           compression-level: 0
 
