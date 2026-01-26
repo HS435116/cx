@@ -138,38 +138,25 @@ jobs:
 
           python -c "import os; from pathlib import Path; spec=Path('buildozer.spec'); text=spec.read_text(encoding='utf-8'); text=text.replace('__ANDROID_KEYSTORE_PASSWORD__', os.environ['ANDROID_KEYSTORE_PASSWORD']).replace('__ANDROID_KEY_ALIAS__', os.environ['ANDROID_KEY_ALIAS']).replace('__ANDROID_KEY_ALIAS_PASSWORD__', os.environ['ANDROID_KEY_ALIAS_PASSWORD']); spec.write_text(text, encoding='utf-8')"
 
-      - name: Build Release (APK + AAB)
+      - name: Build Release APK
         if: github.event_name != 'pull_request'
         run: |
           set -e
           export CFLAGS="$CFLAGS -Wno-macro-redefined"
           export CXXFLAGS="$CXXFLAGS -Wno-macro-redefined"
 
+          # 只构建 APK（可直接安装测试）
           buildozer -v android release
 
-          # 有些 buildozer 版本 release 会直接生成 AAB；如果没有 AAB，再尝试额外命令生成
-          if ! ls -1 bin/*.aab >/dev/null 2>&1; then
-            echo "No AAB found after 'android release', trying to build AAB..."
-            buildozer -v android release aab || buildozer -v android aab || true
-          fi
-
-          # 必须至少生成 AAB（发布优先）
-          if ! ls -1 bin/*.aab >/dev/null 2>&1; then
-            echo "ERROR: AAB not generated. Please check build logs." >&2
+          if ! ls -1 bin/*.apk >/dev/null 2>&1; then
+            echo "ERROR: APK not generated. Please check build logs." >&2
             ls -la bin || true
             exit 1
           fi
 
-          # 可选：如果生成了 APK，则一起重命名；没有 APK 也不让流程失败
-          AAB_SRC=$(ls -1 bin/*.aab | head -n 1)
-          cp -f "$AAB_SRC" "bin/晨曦智能打卡.aab"
-
-          APK_SRC=$(ls -1 bin/*.apk 2>/dev/null | head -n 1 || true)
-          if [ -n "$APK_SRC" ]; then
-            cp -f "$APK_SRC" "bin/晨曦智能打卡.apk"
-          else
-            echo "WARN: No APK generated (this is OK if you only need AAB)."
-          fi
+          # 复制一个“固定文件名”的 APK 便于下载（保留原始 apk 文件不删除）
+          APK_SRC=$(ls -1 bin/*.apk | head -n 1)
+          cp -f "$APK_SRC" "bin/晨曦智能打卡.apk"
 
           ls -la bin
 
