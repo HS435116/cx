@@ -1,0 +1,196 @@
+name: Build Android (Release APK + AAB)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set up Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-pip \
+            python3-setuptools \
+            python3-wheel \
+            build-essential \
+            git \
+            zip \
+            unzip \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            cmake \
+            ninja-build \
+            gettext \
+            libssl-dev \
+            libffi-dev \
+            python3-dev \
+            libsqlite3-dev \
+            liblzma-dev \
+            libbz2-dev \
+            libreadline-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo6 \
+            libsdl2-dev \
+            libsdl2-image-dev \
+            libsdl2-mixer-dev \
+            libsdl2-ttf-dev \
+            libportmidi-dev \
+            libswscale-dev \
+            libavformat-dev \
+            libavcodec-dev \
+            libjpeg-dev \
+            libpng-dev \
+            zlib1g-dev
+
+      - name: Install Python dependencies (pinned stable)
+        run: |
+          python -m ensurepip --upgrade
+          python -m pip install --upgrade pip setuptools wheel virtualenv
+          python -m pip install \
+            buildozer==1.5.0 \
+            cython==0.29.36 \
+            kivy==2.1.0 \
+            kivymd==0.104.2 \
+            plyer==2.1.0 \
+            requests
+
+      - name: Ensure app assets exist (icon/presplash)
+        run: |
+          set -e
+          mkdir -p assets
+          if [ ! -f assets/presplash.png ]; then
+            echo "ERROR: assets/presplash.png not found" >&2
+            ls -la assets || true
+            exit 1
+          fi
+          if [ ! -f assets/icon.png ]; then
+            echo "assets/icon.png missing, trying to generate from assets/icon.ico..."
+            if [ -f assets/icon.ico ]; then
+              python -m pip install --no-cache-dir pillow
+              python - <<'PY'
+from PIL import Image
+img = Image.open('assets/icon.ico')
+img.save('assets/icon.png')
+print('Generated assets/icon.png from assets/icon.ico')
+PY
+            else
+              echo "ERROR: assets/icon.png not found and assets/icon.ico not found" >&2
+              ls -la assets || true
+              exit 1
+            fi
+          fi
+          ls -la assets
+
+      - name: Prepare release keystore (from GitHub Secrets)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_ALIAS_PASSWORD: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
+        run: |
+          set -e
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_ALIAS_PASSWORD" ]; then
+            echo "ERROR: Missing one or more required secrets: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_ALIAS_PASSWORD" >&2
+            exit 1
+          fi
+
+          mkdir -p .keystore
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > .keystore/release.keystore
+          chmod 600 .keystore/release.keystore
+
+          python - <<'PY'
+import os
+from pathlib import Path
+spec = Path('buildozer.spec')
+text = spec.read_text(encoding='utf-8')
+repl = {
+  '__ANDROID_KEYSTORE_PASSWORD__': os.environ['ANDROID_KEYSTORE_PASSWORD'],
+  '__ANDROID_KEY_ALIAS__': os.environ['ANDROID_KEY_ALIAS'],
+  '__ANDROID_KEY_ALIAS_PASSWORD__': os.environ['ANDROID_KEY_ALIAS_PASSWORD'],
+}
+for k, v in repl.items():
+  text = text.replace(k, v)
+spec.write_text(text, encoding='utf-8')
+PY
+
+      - name: Build Release (APK + AAB)
+        run: |
+          set -e
+          export CFLAGS="$CFLAGS -Wno-macro-redefined"
+          export CXXFLAGS="$CXXFLAGS -Wno-macro-redefined"
+
+          buildozer -v android release
+
+          # AAB: 不同 buildozer 版本命令略有差异，这里做兼容尝试
+          buildozer -v android release aab || buildozer -v android aab || true
+
+          # 若仍未生成 aab，则直接失败，避免“看不到 aab 文件”
+          if ! ls -1 bin/*.aab >/dev/null 2>&1; then
+            echo "ERROR: AAB not generated. Please check build logs." >&2
+            ls -la bin || true
+            exit 1
+          fi
+
+          # 统一产物文件名（便于分发/测试）
+          APK_SRC=$(ls -1 bin/*.apk | head -n 1)
+          AAB_SRC=$(ls -1 bin/*.aab | head -n 1)
+          cp -f "$APK_SRC" "bin/晨曦智能打卡.apk"
+          cp -f "$AAB_SRC" "bin/晨曦智能打卡.aab"
+          ls -la bin
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            bin/晨曦智能打卡.apk
+            bin/晨曦智能打卡.aab
+
+      - name: Upload Release artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: |
+            bin/晨曦智能打卡.apk
+            bin/晨曦智能打卡.aab
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            .buildozer/logs/
+            .buildozer/android/platform/build/dists/
+          retention-days: 7
+          compression-level: 0
