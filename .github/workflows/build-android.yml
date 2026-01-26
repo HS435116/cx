@@ -95,12 +95,7 @@ jobs:
             echo "assets/icon.png missing, trying to generate from assets/icon.ico..."
             if [ -f assets/icon.ico ]; then
               python -m pip install --no-cache-dir pillow
-              python - <<'PY'
-from PIL import Image
-img = Image.open('assets/icon.ico')
-img.save('assets/icon.png')
-print('Generated assets/icon.png from assets/icon.ico')
-PY
+              python -c "from PIL import Image; img = Image.open('assets/icon.ico'); img.save('assets/icon.png'); print('Generated assets/icon.png from assets/icon.ico')"
             else
               echo "ERROR: assets/icon.png not found and assets/icon.ico not found" >&2
               ls -la assets || true
