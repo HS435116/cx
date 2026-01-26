@@ -105,38 +105,34 @@ jobs:
           ls -la assets
 
       - name: Prepare release keystore (from GitHub Secrets)
+        # Secrets are NOT provided to pull_request runs (especially from forks).
+        if: github.event_name != 'pull_request'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_ALIAS_PASSWORD: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
         run: |
-          set -e
+          set -euo pipefail
+          echo "GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
+          echo "ANDROID_KEYSTORE_BASE64 length=${#ANDROID_KEYSTORE_BASE64}"
+          echo "ANDROID_KEYSTORE_PASSWORD length=${#ANDROID_KEYSTORE_PASSWORD}"
+          echo "ANDROID_KEY_ALIAS length=${#ANDROID_KEY_ALIAS}"
+          echo "ANDROID_KEY_ALIAS_PASSWORD length=${#ANDROID_KEY_ALIAS_PASSWORD}"
+
           if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_ALIAS_PASSWORD" ]; then
             echo "ERROR: Missing one or more required secrets: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_ALIAS_PASSWORD" >&2
             exit 1
           fi
 
           mkdir -p .keystore
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > .keystore/release.keystore
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > .keystore/release.keystore
           chmod 600 .keystore/release.keystore
 
-          python - <<'PY'
-          import os
-          from pathlib import Path
-          spec = Path('buildozer.spec')
-          text = spec.read_text(encoding='utf-8')
-          repl = {
-            '__ANDROID_KEYSTORE_PASSWORD__': os.environ['ANDROID_KEYSTORE_PASSWORD'],
-            '__ANDROID_KEY_ALIAS__': os.environ['ANDROID_KEY_ALIAS'],
-            '__ANDROID_KEY_ALIAS_PASSWORD__': os.environ['ANDROID_KEY_ALIAS_PASSWORD'],
-          }
-          for k, v in repl.items():
-            text = text.replace(k, v)
-          spec.write_text(text, encoding='utf-8')
-          PY
+          python -c "import os; from pathlib import Path; spec=Path('buildozer.spec'); text=spec.read_text(encoding='utf-8'); text=text.replace('__ANDROID_KEYSTORE_PASSWORD__', os.environ['ANDROID_KEYSTORE_PASSWORD']).replace('__ANDROID_KEY_ALIAS__', os.environ['ANDROID_KEY_ALIAS']).replace('__ANDROID_KEY_ALIAS_PASSWORD__', os.environ['ANDROID_KEY_ALIAS_PASSWORD']); spec.write_text(text, encoding='utf-8')"
 
       - name: Build Release (APK + AAB)
+        if: github.event_name != 'pull_request'
         run: |
           set -e
           export CFLAGS="$CFLAGS -Wno-macro-redefined"
@@ -160,6 +156,13 @@ jobs:
           cp -f "$APK_SRC" "bin/晨曦智能打卡.apk"
           cp -f "$AAB_SRC" "bin/晨曦智能打卡.aab"
           ls -la bin
+
+      - name: Build Debug (PR without secrets)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -e
+          buildozer -v android debug
+          ls -la bin || true
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v1
