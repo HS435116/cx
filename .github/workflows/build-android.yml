@@ -114,6 +114,8 @@ jobs:
           ANDROID_KEY_ALIAS_PASSWORD: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
         run: |
           set -euo pipefail
+          echo "BASE64 is set? $([ -n "$ANDROID_KEYSTORE_BASE64" ] && echo yes || echo no)"
+
           echo "GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
           echo "ANDROID_KEYSTORE_BASE64 length=${#ANDROID_KEYSTORE_BASE64}"
           echo "ANDROID_KEYSTORE_PASSWORD length=${#ANDROID_KEYSTORE_PASSWORD}"
