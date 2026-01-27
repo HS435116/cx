@@ -74,12 +74,10 @@ class AttendanceApp(App):
         # 设置窗口背景色（#11264F）
         Window.clearcolor = (0.0667, 0.149, 0.3098, 1)
 
-        # 默认不允许“直接进后台/隐藏”，只有用户在退出弹窗里明确点“后台运行”才允许
-        self._allow_background = False
-
-        # 统一拦截返回键/关闭事件：避免移动端按返回键时直接最小化到后台
+        # 不允许后台运行：用户关闭/返回时提示并直接退出；应用进入后台时也不保持运行
         Window.bind(on_request_close=self.on_request_close)
         Window.bind(on_keyboard=self.on_keyboard)
+
 
         # 移动端无边框全屏，桌面端模拟移动端尺寸
         from kivy.utils import platform as kivy_platform
@@ -113,7 +111,8 @@ class AttendanceApp(App):
 
     
     def _ensure_foreground_and_login(self, *args):
-        if kivy_platform in ('android', 'ios') and not getattr(self, '_allow_background', False):
+        # 启动后尽量确保应用在前台可见（部分机型启动瞬间失焦会像“进后台”）
+        if kivy_platform in ('android', 'ios'):
             try:
                 Window.show()
             except Exception:
@@ -124,6 +123,7 @@ class AttendanceApp(App):
         except Exception:
             pass
 
+
     def on_keyboard(self, window, key, scancode, codepoint, modifiers):
         """拦截移动端返回键，避免系统默认行为把窗口直接送入后台"""
         # Android 返回键通常是 27 (ESC)
@@ -132,29 +132,26 @@ class AttendanceApp(App):
         return False
 
     def on_pause(self):
-        """应用暂停时调用（移动端）"""
-        try:
-            main_screen = self.sm.get_screen('main')
-            main_screen.enable_auto_punch()
-            main_screen.evaluate_auto_mode()
-        except Exception:
-            pass
-        return True
+        """应用暂停时调用（移动端）
+
+        不允许后台运行：当应用进入后台（如按 Home/切换应用）时，不保持进程运行。
+        """
+        return False
+
     
     def on_resume(self):
         """应用恢复时调用（移动端）"""
-        # 如果没有选择“后台运行”，恢复时强制把窗口显示出来，避免看起来像“进后台”
-        if not getattr(self, '_allow_background', False):
-            try:
-                Window.show()
-            except Exception:
-                pass
+        try:
+            Window.show()
+        except Exception:
+            pass
 
         try:
             main_screen = self.sm.get_screen('main')
             main_screen.evaluate_auto_mode()
         except Exception:
             pass
+
 
     def on_request_close(self, *args):
         if getattr(self, '_force_close', False):
@@ -199,46 +196,30 @@ class AttendanceApp(App):
             popup.open()
             return True
 
-        # 其他页面：允许选择后台运行或退出
+        # 其他页面：不提供后台运行，统一提示“确认退出”
         content = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(20))
-        content.add_widget(Label(text='确认退出？可选择后台运行或退出系统', color=(1, 1, 1, 1)))
+        content.add_widget(Label(text='确认退出应用？', color=(1, 1, 1, 1)))
 
         btn_layout = BoxLayout(size_hint=(1, None), height=dp(44), spacing=dp(10))
-        background_btn = Button(text='后台运行', background_color=(0.2, 0.6, 0.8, 1))
+        cancel_btn = Button(text='取消', background_color=(0.2, 0.6, 0.8, 1))
         exit_btn = Button(text='退出系统', background_color=(0.8, 0.2, 0.2, 1))
-        btn_layout.add_widget(background_btn)
+        btn_layout.add_widget(cancel_btn)
         btn_layout.add_widget(exit_btn)
         content.add_widget(btn_layout)
 
-        popup = Popup(title='退出提醒', content=content, size_hint=(0.86, 0.36), background_color=(0.0667, 0.149, 0.3098, 1), background='')
+        popup = Popup(title='退出提醒', content=content, size_hint=(0.86, 0.32), background_color=(0.0667, 0.149, 0.3098, 1), background='')
         self._exit_popup = popup
 
-        background_btn.bind(on_press=lambda x: self.keep_running(popup))
+        cancel_btn.bind(on_press=lambda x: popup.dismiss())
         exit_btn.bind(on_press=lambda x: self.confirm_exit(popup))
 
         popup.bind(on_dismiss=lambda x: setattr(self, '_exit_popup', None))
         popup.open()
         return True
 
-    def keep_running(self, popup):
-        if popup:
-            popup.dismiss()
 
-        # 只有用户明确点击“后台运行”后，才允许隐藏到后台
-        self._allow_background = True
 
-        try:
-            main_screen = self.sm.get_screen('main')
-            main_screen.enable_auto_punch()
-            main_screen.evaluate_auto_mode()
-        except Exception:
-            pass
 
-        if kivy_platform in ('android', 'ios'):
-            try:
-                Window.hide()
-            except Exception:
-                pass
 
     def confirm_exit(self, popup):
 
