@@ -150,6 +150,7 @@ jobs:
           export CFLAGS="$CFLAGS -Wno-macro-redefined"
           export CXXFLAGS="$CXXFLAGS -Wno-macro-redefined"
 
+<<<<<<< HEAD
           # 目标：最终产出可安装的 APK。
           # 注：某些 buildozer/p4a 版本在 release 时默认产出 AAB（bundle）。
           buildozer -v android release
@@ -183,10 +184,24 @@ jobs:
             cp -f apks_out/universal.apk "bin/晨曦智能打卡.apk"
           else
             echo "ERROR: Neither APK nor AAB generated. Please check build logs." >&2
+=======
+          # 只构建 APK（可直接安装测试）
+          buildozer -v android release
+
+          if ! ls -1 bin/*.apk >/dev/null 2>&1; then
+            echo "ERROR: APK not generated. Please check build logs." >&2
+>>>>>>> a925f3b817d3487a5eb9b557c687fda13b2d0404
             ls -la bin || true
             exit 1
           fi
 
+<<<<<<< HEAD
+=======
+          # 复制一个“固定文件名”的 APK 便于下载（保留原始 apk 文件不删除）
+          APK_SRC=$(ls -1 bin/*.apk | head -n 1)
+          cp -f "$APK_SRC" "bin/晨曦智能打卡.apk"
+
+>>>>>>> a925f3b817d3487a5eb9b557c687fda13b2d0404
           ls -la bin
 
       - name: Build Debug (PR without secrets)
