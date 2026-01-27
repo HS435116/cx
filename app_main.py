@@ -149,24 +149,65 @@ class AttendanceApp(App):
     def _get_diag_dir(self) -> str:
         """选择一个“可被 adb pull / 文件管理器访问”的诊断目录。
 
-        - Android：优先写到 /sdcard/Android/data/<package>/files/ （应用专属外部目录）
-        - 其他平台：退回 user_data_dir
+        说明：部分华为/鸿蒙 ROM 上，`android.storage.primary_external_storage_path()` 可能异常，
+        导致无法创建 `/sdcard/Android/data/<package>/files`。
+
+        这里改为：直接尝试多个常见外部存储基准路径，并做“可写探测”。
         """
         # 非 Android：直接使用 Kivy 的 user_data_dir
         if kivy_platform != 'android':
             return getattr(self, 'user_data_dir', None) or os.getcwd()
 
-        # Android：尝试外部目录（无需 READ/WRITE_EXTERNAL_STORAGE 权限，属于 app-specific）
+        # 先用 Android 官方 API 获取 app 专属外部目录（最稳，且不需要存储权限）
+        act = self._get_android_activity()
+        if act:
+            try:
+                ext = act.getExternalFilesDir(None)
+                if ext is not None:
+                    ext_dir = str(ext.getAbsolutePath())
+                    os.makedirs(ext_dir, exist_ok=True)
+
+                    probe = os.path.join(ext_dir, '.diag_probe')
+                    with open(probe, 'w', encoding='utf-8') as f:
+                        f.write('ok')
+                    try:
+                        os.remove(probe)
+                    except Exception:
+                        pass
+
+                    return ext_dir
+            except Exception:
+                pass
+
+        # 兜底：尝试常见外部路径拼接（部分 ROM getExternalFilesDir 可能异常）
         pkg = self._android_package_name() or 'unknown.package'
-        try:
-            from android.storage import primary_external_storage_path
-            base = primary_external_storage_path()
-            ext_dir = os.path.join(base, 'Android', 'data', pkg, 'files')
-            os.makedirs(ext_dir, exist_ok=True)
-            return ext_dir
-        except Exception:
-            # 兜底：内部目录（release 包可能无法 adb 直接读取）
-            return getattr(self, 'user_data_dir', None) or os.getcwd()
+        bases = []
+        env_base = os.environ.get('EXTERNAL_STORAGE')
+        if env_base:
+            bases.append(env_base)
+        bases.extend(['/storage/emulated/0', '/sdcard', '/storage/self/primary'])
+
+        for base in bases:
+            try:
+                ext_dir = os.path.join(base, 'Android', 'data', pkg, 'files')
+                os.makedirs(ext_dir, exist_ok=True)
+
+                probe = os.path.join(ext_dir, '.diag_probe')
+                with open(probe, 'w', encoding='utf-8') as f:
+                    f.write('ok')
+                try:
+                    os.remove(probe)
+                except Exception:
+                    pass
+
+                return ext_dir
+            except Exception:
+                continue
+
+        # 兜底：内部目录（release 包可能无法 adb 直接读取）
+        return getattr(self, 'user_data_dir', None) or os.getcwd()
+
+
 
     def _pip_supported(self) -> bool:
         # Picture-in-Picture 最低需要 Android 8.0 (API 26)
