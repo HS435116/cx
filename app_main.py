@@ -13,6 +13,8 @@ import time
 import json
 import traceback
 from datetime import datetime
+from threading import Thread
+
 
 
 
@@ -29,6 +31,7 @@ if os.path.exists(_font_path):
 from kivy.app import App
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.floatlayout import FloatLayout
 
 from kivy.uix.label import Label
 from kivy.uix.button import Button
@@ -37,6 +40,7 @@ from kivy.core.window import Window
 from kivy.metrics import dp
 from kivy.utils import platform as kivy_platform
 from kivy.clock import Clock
+
 
 
 
@@ -73,8 +77,9 @@ class AttendanceApp(App):
             events = getattr(self, '_diag_events', None)
             if not events:
                 return
-            log_dir = getattr(self, 'user_data_dir', None) or os.getcwd()
+            log_dir = self._get_diag_dir()
             path = os.path.join(log_dir, 'startup_diagnosis.json')
+
             payload = {
                 'saved_at': datetime.now().isoformat(timespec='seconds'),
                 'platform': kivy_platform,
@@ -88,8 +93,9 @@ class AttendanceApp(App):
     def _log_exception(self, where: str):
         """把启动异常写入本地文件，方便在手机上定位“点开就回桌面/像进后台”的问题。"""
         try:
-            log_dir = getattr(self, 'user_data_dir', None) or os.getcwd()
+            log_dir = self._get_diag_dir()
             log_path = os.path.join(log_dir, 'startup_error.log')
+
             with open(log_path, 'a', encoding='utf-8') as f:
                 f.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] {where}\n")
                 f.write(traceback.format_exc())
@@ -110,50 +116,246 @@ class AttendanceApp(App):
         content.add_widget(btn)
         return content
 
+    # --- Android 小窗(PiP) / 后台控制 ---
+    def _get_android_activity(self):
+        if kivy_platform != 'android':
+            return None
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            return PythonActivity.mActivity
+        except Exception:
+            return None
+
+    def _android_sdk_int(self) -> int:
+        if kivy_platform != 'android':
+            return 0
+        try:
+            from jnius import autoclass
+            VERSION = autoclass('android.os.Build$VERSION')
+            return int(VERSION.SDK_INT)
+        except Exception:
+            return 0
+
+    def _android_package_name(self) -> str:
+        act = self._get_android_activity()
+        if not act:
+            return ''
+        try:
+            return str(act.getPackageName())
+        except Exception:
+            return ''
+
+    def _get_diag_dir(self) -> str:
+        """选择一个“可被 adb pull / 文件管理器访问”的诊断目录。
+
+        - Android：优先写到 /sdcard/Android/data/<package>/files/ （应用专属外部目录）
+        - 其他平台：退回 user_data_dir
+        """
+        # 非 Android：直接使用 Kivy 的 user_data_dir
+        if kivy_platform != 'android':
+            return getattr(self, 'user_data_dir', None) or os.getcwd()
+
+        # Android：尝试外部目录（无需 READ/WRITE_EXTERNAL_STORAGE 权限，属于 app-specific）
+        pkg = self._android_package_name() or 'unknown.package'
+        try:
+            from android.storage import primary_external_storage_path
+            base = primary_external_storage_path()
+            ext_dir = os.path.join(base, 'Android', 'data', pkg, 'files')
+            os.makedirs(ext_dir, exist_ok=True)
+            return ext_dir
+        except Exception:
+            # 兜底：内部目录（release 包可能无法 adb 直接读取）
+            return getattr(self, 'user_data_dir', None) or os.getcwd()
+
+    def _pip_supported(self) -> bool:
+        # Picture-in-Picture 最低需要 Android 8.0 (API 26)
+        return kivy_platform == 'android' and self._android_sdk_int() >= 26
+
+
+    def _set_pip_close_visible(self, visible: bool):
+        btn = getattr(self, '_pip_close_btn', None)
+        if not btn:
+            return
+        btn.disabled = not visible
+        btn.opacity = 1 if visible else 0
+
+    def _enter_pip(self, reason: str = '') -> bool:
+        """进入 Android 系统 PiP 小窗。
+
+        说明：PiP 是否生效还取决于系统/ROM 设置（部分鸿蒙/华为可能限制）。
+        """
+        if not self._pip_supported():
+            return False
+        act = self._get_android_activity()
+        if not act:
+            return False
+        try:
+            # 有些 ROM 进入 PiP 会触发 on_pause；这里先标记，避免被 on_pause 结束进程
+            self._in_pip = True
+            self._diag_event('enter_pip', {'reason': reason})
+            act.enterPictureInPictureMode()
+            self._set_pip_close_visible(True)
+            return True
+        except Exception:
+            self._in_pip = False
+            self._log_exception('enterPictureInPictureMode failed')
+            self._diag_event('enter_pip_failed', {'reason': reason})
+            return False
+
+    def _go_background(self, reason: str = '') -> bool:
+        """把任务送入后台（最小化）。"""
+        act = self._get_android_activity()
+        if not act:
+            return False
+        try:
+            self._allow_background = True
+            self._diag_event('go_background', {'reason': reason})
+            # True：允许把整个任务移到后台
+            act.moveTaskToBack(True)
+            return True
+        except Exception:
+            self._log_exception('moveTaskToBack failed')
+            return False
+
+    def _pip_close_pressed(self, *_):
+        # 用户要求：小窗模式下提供“关闭”按键，点击后退出应用
+        self._diag_event('pip_close_pressed')
+        self.confirm_exit(None)
+
+    def _build_exit_popup(self, title: str = '退出提醒'):
+        """统一的退出/后台/小窗选择弹窗。"""
+        content = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(20))
+        content.add_widget(Label(text='请选择操作：', color=(1, 1, 1, 1)))
+
+        # 第一行：取消 / 退出
+        row1 = BoxLayout(size_hint=(1, None), height=dp(44), spacing=dp(10))
+        cancel_btn = Button(text='取消', background_color=(0.2, 0.6, 0.8, 1))
+        exit_btn = Button(text='退出应用', background_color=(0.8, 0.2, 0.2, 1))
+        row1.add_widget(cancel_btn)
+        row1.add_widget(exit_btn)
+        content.add_widget(row1)
+
+        # 第二行：小窗 / 后台
+        row2 = BoxLayout(size_hint=(1, None), height=dp(44), spacing=dp(10))
+        pip_btn = Button(text='小窗悬浮', background_color=(0.25, 0.55, 0.25, 1))
+        bg_btn = Button(text='后台运行', background_color=(0.55, 0.55, 0.55, 1))
+        row2.add_widget(pip_btn)
+        row2.add_widget(bg_btn)
+        content.add_widget(row2)
+
+        popup = Popup(
+            title=title,
+            content=content,
+            size_hint=(0.9, 0.42),
+            background_color=(0.0667, 0.149, 0.3098, 1),
+            background=''
+        )
+
+        cancel_btn.bind(on_press=lambda *_: popup.dismiss())
+        exit_btn.bind(on_press=lambda *_: self.confirm_exit(popup))
+
+        def _do_pip(*_):
+            popup.dismiss()
+            if not self._enter_pip('exit_popup'):
+                # 不支持/失败时，退回到后台运行
+                self._go_background('pip_failed_fallback')
+
+        def _do_bg(*_):
+            popup.dismiss()
+            self._go_background('exit_popup')
+
+        pip_btn.bind(on_press=_do_pip)
+        bg_btn.bind(on_press=_do_bg)
+        return popup
+
     def _init_screens(self, *_):
-        """延迟导入并初始化所有屏幕，降低启动阶段卡顿/异常概率。"""
+
+        """延迟导入并初始化所有屏幕，降低启动阶段卡顿/异常概率。
+
+        说明：在华为/鸿蒙机型上，启动阶段如果主线程长时间卡在 import/main.py 解析，
+        可能出现“只看到启动画面，进不去登录页，像进入后台”。
+
+        这里把“模块导入”放到后台线程做，主线程只负责切换界面与创建 widget。
+        """
         if getattr(self, '_screens_inited', False):
             return
-        self._screens_inited = True
+        if getattr(self, '_init_in_progress', False):
+            return
+
+        self._init_in_progress = True
         self._diag_event('init_screens_start')
 
+        def _import_worker():
+            self._diag_event('init_import_thread_start')
+            try:
+                from main import LoginScreen, RegisterScreen
+                from main_screen import MainScreen
+                from settings_screen import SettingsScreen
+                from admin_screen import AdminScreen, AdManagerScreen, UserSearchScreen
+
+                self._imported_screens = {
+                    'LoginScreen': LoginScreen,
+                    'RegisterScreen': RegisterScreen,
+                    'MainScreen': MainScreen,
+                    'SettingsScreen': SettingsScreen,
+                    'AdminScreen': AdminScreen,
+                    'UserSearchScreen': UserSearchScreen,
+                    'AdManagerScreen': AdManagerScreen,
+                }
+                self._diag_event('init_import_ok')
+                Clock.schedule_once(self._apply_imported_screens, 0)
+            except Exception:
+                self._log_exception('init_import failed')
+                self._diag_event('init_import_failed', {'error': 'exception'})
+                Clock.schedule_once(self._show_init_error, 0)
+
+        Thread(target=_import_worker, daemon=True).start()
+
+    def _apply_imported_screens(self, *_):
         try:
-            from main import LoginScreen, RegisterScreen
-            from main_screen import MainScreen
-            from settings_screen import SettingsScreen
-            from admin_screen import AdminScreen, AdManagerScreen, UserSearchScreen
+            screens = getattr(self, '_imported_screens', None) or {}
+            if not screens:
+                raise RuntimeError('No imported screens')
 
             # 注意：不要重复添加
-            for name, widget in [
-                ('login', LoginScreen(name='login')),
-                ('register', RegisterScreen(name='register')),
-                ('main', MainScreen(name='main')),
-                ('settings', SettingsScreen(name='settings')),
-                ('admin', AdminScreen(name='admin')),
-                ('user_search', UserSearchScreen(name='user_search')),
-                ('ad_manager', AdManagerScreen(name='ad_manager')),
-            ]:
+            pairs = [
+                ('login', screens['LoginScreen'](name='login')),
+                ('register', screens['RegisterScreen'](name='register')),
+                ('main', screens['MainScreen'](name='main')),
+                ('settings', screens['SettingsScreen'](name='settings')),
+                ('admin', screens['AdminScreen'](name='admin')),
+                ('user_search', screens['UserSearchScreen'](name='user_search')),
+                ('ad_manager', screens['AdManagerScreen'](name='ad_manager')),
+            ]
+            for name, widget in pairs:
                 if not self.sm.has_screen(name):
                     self.sm.add_widget(widget)
 
             self.sm.current = 'login'
+            self._screens_inited = True
             self._diag_event('init_screens_ok')
         except Exception:
-            self._log_exception('init_screens failed')
-            self._diag_event('init_screens_failed', {'error': 'exception'})
+            self._log_exception('apply_imported_screens failed')
+            self._diag_event('init_apply_failed', {'error': 'exception'})
+            self._show_init_error()
+        finally:
+            self._init_in_progress = False
+            Clock.schedule_once(self._diag_save, 0)
 
-            # 把 loading 页替换为错误提示，尽量让用户看到
-            try:
-                if self.sm.has_screen('loading'):
-                    scr = self.sm.get_screen('loading')
-                    scr.clear_widgets()
-                    scr.add_widget(self._build_fallback_error_view())
-                    self.sm.current = 'loading'
-            except Exception:
-                pass
+    def _show_init_error(self, *_):
+        try:
+            if self.sm and self.sm.has_screen('loading'):
+                scr = self.sm.get_screen('loading')
+                scr.clear_widgets()
+                scr.add_widget(self._build_fallback_error_view())
+                self.sm.current = 'loading'
+        except Exception:
+            pass
+        finally:
+            self._init_in_progress = False
+            Clock.schedule_once(self._diag_save, 0)
 
-        # 保存一次诊断报告（无论成功失败）
-        Clock.schedule_once(self._diag_save, 0)
 
 
     def build(self):
@@ -176,20 +378,37 @@ class AttendanceApp(App):
             content.add_widget(Label(text='晨曦智能打卡', font_size=dp(22), bold=True, color=(1, 1, 1, 1)))
             content.add_widget(Label(text='正在加载，请稍候…', font_size=dp(14), color=(0.9, 0.95, 1, 1)))
 
-            log_dir = getattr(self, 'user_data_dir', None) or os.getcwd()
+            log_dir = self._get_diag_dir()
             content.add_widget(Label(text=f'日志目录：{log_dir}', font_size=dp(11), color=(0.75, 0.85, 1, 1)))
+
 
             loading.add_widget(content)
 
             self.sm.add_widget(loading)
             self.sm.current = 'loading'
 
+            # 外层容器：用于在 PiP 小窗时显示“关闭”按钮（FloatLayout 可以覆盖在 ScreenManager 上）
+            root = FloatLayout()
+            root.add_widget(self.sm)
+
+            self._pip_close_btn = Button(
+                text='关闭',
+                size_hint=(None, None),
+                size=(dp(72), dp(40)),
+                pos_hint={'right': 0.995, 'top': 0.995},
+                background_color=(0.85, 0.2, 0.2, 1),
+            )
+            self._pip_close_btn.bind(on_press=self._pip_close_pressed)
+            root.add_widget(self._pip_close_btn)
+            self._set_pip_close_visible(False)
+
             # 延迟初始化真实界面，避免 build() 阻塞太久
             Clock.schedule_once(self._init_screens, 0)
             Clock.schedule_once(self._init_screens, 0.2)
 
             self._diag_event('build_finished')
-            return self.sm
+            return root
+
         except Exception:
             self._log_exception('build() failed')
             self._diag_event('build_failed', {'error': 'exception'})
@@ -207,7 +426,14 @@ class AttendanceApp(App):
         # 记录启动时间：用于区分“启动阶段的短暂 pause”与“用户把应用切到后台”
         self._startup_ts = time.time()
 
+        # 后台运行控制：默认不允许后台；只有在“退出提醒”里点了【后台运行】才允许
+        self._allow_background = False
+        # PiP 小窗标记：只有我们主动调用 enterPictureInPictureMode() 才置 True
+        self._in_pip = False
+        self._set_pip_close_visible(False)
+
         # 兜底：若 build 阶段的延迟初始化未触发，则在 on_start 再触发一次
+
         Clock.schedule_once(self._init_screens, 0)
 
         # 启动后延迟保存一次诊断文件（给生命周期事件留时间）
@@ -266,20 +492,33 @@ class AttendanceApp(App):
     def on_pause(self):
         """应用暂停时调用（移动端）
 
-        目标：不允许长期后台运行。
-        但华为/鸿蒙等机型在“刚启动”的几秒内可能会触发一次短暂 pause，
-        如果直接 return False 会导致“点开就回桌面”。
-
-        策略：启动后 10 秒内的 pause 视为系统抖动，允许（return True）；
-        10 秒后如果进入后台，则直接结束应用（return False）。
+        需求：
+        1) 默认不允许后台运行（用户切走/误触返回不应长期留后台）。
+        2) 只有当用户在“退出提醒”里明确点了【后台运行】时，才允许在后台继续。
+        3) 华为/鸿蒙部分机型启动阶段可能会出现一次短暂 pause 抖动，不能因此被系统杀掉。
+        4) 若已进入 PiP 小窗，也必须允许（否则会退出）。
         """
-        self._diag_event('on_pause')
+        self._diag_event('on_pause', {
+            'allow_background': bool(getattr(self, '_allow_background', False)),
+            'in_pip': bool(getattr(self, '_in_pip', False)),
+        })
+
+        # 启动阶段抖动兜底：10 秒内一律允许
         try:
             if time.time() - getattr(self, '_startup_ts', 0) < 10:
                 return True
         except Exception:
             return True
+
+        if getattr(self, '_in_pip', False):
+            return True
+
+        if getattr(self, '_allow_background', False):
+            return True
+
+        # 默认：不允许后台，交还给系统（通常会停止/结束）
         return False
+
 
 
 
@@ -288,6 +527,13 @@ class AttendanceApp(App):
     def on_resume(self):
         """应用恢复时调用（移动端）"""
         self._diag_event('on_resume')
+
+        # 恢复到前台后：
+        # - 认为已经退出 PiP/后台场景（再次切后台必须重新点“退出提醒”）
+        self._allow_background = False
+        self._in_pip = False
+        self._set_pip_close_visible(False)
+
         try:
             main_screen = self.sm.get_screen('main')
             main_screen.evaluate_auto_mode()
@@ -297,8 +543,17 @@ class AttendanceApp(App):
 
 
 
+
     def on_request_close(self, *args):
+        """拦截返回/关闭。
+
+        你的需求拆解：
+        - 误触返回/关闭：不要退出，而是尽量进入“小窗悬浮”(PiP)。
+        - 只有在“退出提醒”里点击【后台运行】才允许进入后台。
+        - 小窗模式下提供【关闭】按键：点击后退出应用。
+        """
         self._diag_event('on_request_close')
+
         if getattr(self, '_force_close', False):
             return False
 
@@ -311,57 +566,26 @@ class AttendanceApp(App):
         except Exception:
             current_screen = None
 
-        # 登录/注册页：禁止“后台运行”，避免用户误触导致看起来像“进后台/闪退”
+        # 注册页按返回：回登录页
         if current_screen == 'register':
-            # 注册页按返回键：返回上一级（登录页）
             try:
                 self.sm.current = 'login'
             except Exception:
                 pass
             return True
 
-        if current_screen == 'login':
-            # 登录页按返回键：只允许退出（可取消）
-            content = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(20))
-            content.add_widget(Label(text='确认退出应用？', color=(1, 1, 1, 1)))
+        # 非登录页：优先进入小窗，防止误触直接退出
+        if current_screen not in ('login', 'register'):
+            if self._enter_pip('back_key'):
+                return True
 
-            btn_layout = BoxLayout(size_hint=(1, None), height=dp(44), spacing=dp(10))
-            cancel_btn = Button(text='取消', background_color=(0.2, 0.6, 0.8, 1))
-            exit_btn = Button(text='退出系统', background_color=(0.8, 0.2, 0.2, 1))
-            btn_layout.add_widget(cancel_btn)
-            btn_layout.add_widget(exit_btn)
-            content.add_widget(btn_layout)
-
-            popup = Popup(title='退出提醒', content=content, size_hint=(0.86, 0.32), background_color=(0.0667, 0.149, 0.3098, 1), background='')
-            self._exit_popup = popup
-
-            cancel_btn.bind(on_press=lambda x: popup.dismiss())
-            exit_btn.bind(on_press=lambda x: self.confirm_exit(popup))
-
-            popup.bind(on_dismiss=lambda x: setattr(self, '_exit_popup', None))
-            popup.open()
-            return True
-
-        # 其他页面：不提供后台运行，统一提示“确认退出”
-        content = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(20))
-        content.add_widget(Label(text='确认退出应用？', color=(1, 1, 1, 1)))
-
-        btn_layout = BoxLayout(size_hint=(1, None), height=dp(44), spacing=dp(10))
-        cancel_btn = Button(text='取消', background_color=(0.2, 0.6, 0.8, 1))
-        exit_btn = Button(text='退出系统', background_color=(0.8, 0.2, 0.2, 1))
-        btn_layout.add_widget(cancel_btn)
-        btn_layout.add_widget(exit_btn)
-        content.add_widget(btn_layout)
-
-        popup = Popup(title='退出提醒', content=content, size_hint=(0.86, 0.32), background_color=(0.0667, 0.149, 0.3098, 1), background='')
+        # 登录页 / 不支持 PiP：弹出选择（退出 / 后台 / 小窗）
+        popup = self._build_exit_popup('退出提醒')
         self._exit_popup = popup
-
-        cancel_btn.bind(on_press=lambda x: popup.dismiss())
-        exit_btn.bind(on_press=lambda x: self.confirm_exit(popup))
-
-        popup.bind(on_dismiss=lambda x: setattr(self, '_exit_popup', None))
+        popup.bind(on_dismiss=lambda *_: setattr(self, '_exit_popup', None))
         popup.open()
         return True
+
 
 
 

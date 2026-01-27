@@ -83,6 +83,11 @@ android.release_keyalias_password = __ANDROID_KEY_ALIAS_PASSWORD__
 # (str) Android entry point, default is ok for Kivy-based app
 #android.entrypoint = org.renpy.android.PythonActivity
 
+# --- Picture-in-Picture (小窗悬浮) ---
+# 让 Activity 支持 PiP（Android 8.0+）。
+# 注意：是否允许小窗，还取决于系统/ROM 的"画中画/小窗"开关。
+android.extra_manifest_activity_arguments = android:supportsPictureInPicture="true" android:resizeableActivity="true" android:configChanges="keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize"
+
 # (list) Android application meta-data to set (key=value format)
 #android.meta_data =
 
