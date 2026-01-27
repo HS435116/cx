@@ -10,8 +10,10 @@
 
 import os
 import time
+import json
 import traceback
 from datetime import datetime
+
 
 
 from kivy.config import Config
@@ -25,8 +27,9 @@ if os.path.exists(_font_path):
     resource_add_path(os.path.dirname(_font_path))
 
 from kivy.app import App
-from kivy.uix.screenmanager import ScreenManager
+from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.boxlayout import BoxLayout
+
 from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.popup import Popup
@@ -38,16 +41,49 @@ from kivy.clock import Clock
 
 
 
-# 导入所有屏幕
-from main_screen import MainScreen
-from settings_screen import SettingsScreen
-from admin_screen import AdminScreen, AdManagerScreen, UserSearchScreen
-from main import db
+# 重要：为兼容华为/鸿蒙部分机型启动敏感问题，避免在模块导入阶段做大量 import。
+# 屏幕类与 db 在 _init_screens() 中延迟导入。
+
 
 
 
 class AttendanceApp(App):
     """打卡应用主类"""
+
+    def _diag_event(self, event_name: str, data=None):
+        """轻量启动诊断：把关键生命周期事件记录到本地文件。
+
+        HarmonyOS/华为机型“点开就回桌面/像进后台”多数情况下要靠事件时间线定位。
+        """
+        try:
+            if not hasattr(self, '_diag_t0'):
+                self._diag_t0 = time.time()
+                self._diag_events = []
+            ts = time.time() - self._diag_t0
+            self._diag_events.append({
+                'time': round(ts, 3),
+                'event': event_name,
+                'data': data,
+            })
+        except Exception:
+            pass
+
+    def _diag_save(self, *_):
+        try:
+            events = getattr(self, '_diag_events', None)
+            if not events:
+                return
+            log_dir = getattr(self, 'user_data_dir', None) or os.getcwd()
+            path = os.path.join(log_dir, 'startup_diagnosis.json')
+            payload = {
+                'saved_at': datetime.now().isoformat(timespec='seconds'),
+                'platform': kivy_platform,
+                'events': events,
+            }
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def _log_exception(self, where: str):
         """把启动异常写入本地文件，方便在手机上定位“点开就回桌面/像进后台”的问题。"""
@@ -62,49 +98,103 @@ class AttendanceApp(App):
             # 日志写入失败时忽略（避免二次异常）
             pass
 
+    def _build_fallback_error_view(self):
+        content = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(20))
+        content.add_widget(Label(text='应用启动失败', font_size=dp(20), color=(1, 1, 1, 1)))
+        content.add_widget(Label(
+            text='请在应用数据目录中查找 startup_error.log / startup_diagnosis.json。',
+            halign='left', valign='top', color=(0.9, 0.95, 1, 1)
+        ))
+        btn = Button(text='退出', size_hint=(1, None), height=dp(44), background_color=(0.8, 0.2, 0.2, 1))
+        btn.bind(on_press=lambda *_: self.confirm_exit(None))
+        content.add_widget(btn)
+        return content
+
+    def _init_screens(self, *_):
+        """延迟导入并初始化所有屏幕，降低启动阶段卡顿/异常概率。"""
+        if getattr(self, '_screens_inited', False):
+            return
+        self._screens_inited = True
+        self._diag_event('init_screens_start')
+
+        try:
+            from main import LoginScreen, RegisterScreen
+            from main_screen import MainScreen
+            from settings_screen import SettingsScreen
+            from admin_screen import AdminScreen, AdManagerScreen, UserSearchScreen
+
+            # 注意：不要重复添加
+            for name, widget in [
+                ('login', LoginScreen(name='login')),
+                ('register', RegisterScreen(name='register')),
+                ('main', MainScreen(name='main')),
+                ('settings', SettingsScreen(name='settings')),
+                ('admin', AdminScreen(name='admin')),
+                ('user_search', UserSearchScreen(name='user_search')),
+                ('ad_manager', AdManagerScreen(name='ad_manager')),
+            ]:
+                if not self.sm.has_screen(name):
+                    self.sm.add_widget(widget)
+
+            self.sm.current = 'login'
+            self._diag_event('init_screens_ok')
+        except Exception:
+            self._log_exception('init_screens failed')
+            self._diag_event('init_screens_failed', {'error': 'exception'})
+
+            # 把 loading 页替换为错误提示，尽量让用户看到
+            try:
+                if self.sm.has_screen('loading'):
+                    scr = self.sm.get_screen('loading')
+                    scr.clear_widgets()
+                    scr.add_widget(self._build_fallback_error_view())
+                    self.sm.current = 'loading'
+            except Exception:
+                pass
+
+        # 保存一次诊断报告（无论成功失败）
+        Clock.schedule_once(self._diag_save, 0)
+
+
     def build(self):
         """构建应用界面
 
-        华为/鸿蒙部分机型上如果启动阶段抛异常，通常表现为“点开后立刻回到桌面/像进入后台”。
-        这里做兜底：捕获异常并显示一个错误页，同时把 traceback 写入 startup_error.log。
+        Mate 20 / HarmonyOS 上“点开就回桌面/像进入后台”常见原因：启动阶段卡顿或异常。
+        这里尽量让 build() 非常快返回一个“加载中”界面，然后用 Clock 延迟导入/初始化各屏幕。
         """
         self.title = "晨曦智能打卡"
         self.app_version = "1.1.0"
 
+        # 诊断：记录 build 开始
+        self._diag_event('build_started')
+
         try:
-            # 创建屏幕管理器
             self.sm = ScreenManager()
 
-            # 添加登录屏幕（从第一部分导入）
-            from main import LoginScreen, RegisterScreen
-            self.sm.add_widget(LoginScreen(name='login'))
-            self.sm.add_widget(RegisterScreen(name='register'))
+            loading = Screen(name='loading')
+            content = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(24))
+            content.add_widget(Label(text='晨曦智能打卡', font_size=dp(22), bold=True, color=(1, 1, 1, 1)))
+            content.add_widget(Label(text='正在加载，请稍候…', font_size=dp(14), color=(0.9, 0.95, 1, 1)))
 
-            # 添加主功能屏幕
-            self.sm.add_widget(MainScreen(name='main'))
-            self.sm.add_widget(SettingsScreen(name='settings'))
-            self.sm.add_widget(AdminScreen(name='admin'))
-            self.sm.add_widget(UserSearchScreen(name='user_search'))
-            self.sm.add_widget(AdManagerScreen(name='ad_manager'))
+            log_dir = getattr(self, 'user_data_dir', None) or os.getcwd()
+            content.add_widget(Label(text=f'日志目录：{log_dir}', font_size=dp(11), color=(0.75, 0.85, 1, 1)))
 
-            # 确保启动后首先显示登录页
-            self.sm.current = 'login'
+            loading.add_widget(content)
 
+            self.sm.add_widget(loading)
+            self.sm.current = 'loading'
+
+            # 延迟初始化真实界面，避免 build() 阻塞太久
+            Clock.schedule_once(self._init_screens, 0)
+            Clock.schedule_once(self._init_screens, 0.2)
+
+            self._diag_event('build_finished')
             return self.sm
         except Exception:
             self._log_exception('build() failed')
+            self._diag_event('build_failed', {'error': 'exception'})
+            return self._build_fallback_error_view()
 
-            # 极简错误页（尽量不依赖复杂组件）
-            content = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(20))
-            content.add_widget(Label(text='应用启动失败', font_size=dp(20), color=(1, 1, 1, 1)))
-            content.add_widget(Label(
-                text='请将手机连接电脑，用 adb logcat 查看错误，或在应用数据目录中查找 startup_error.log。',
-                halign='left', valign='top', color=(0.9, 0.95, 1, 1)
-            ))
-            btn = Button(text='退出', size_hint=(1, None), height=dp(44), background_color=(0.8, 0.2, 0.2, 1))
-            btn.bind(on_press=lambda *_: self.confirm_exit(None))
-            content.add_widget(btn)
-            return content
 
     
     def on_start(self):
@@ -112,8 +202,17 @@ class AttendanceApp(App):
         # 设置窗口背景色（#11264F）
         Window.clearcolor = (0.0667, 0.149, 0.3098, 1)
 
+        self._diag_event('on_start')
+
         # 记录启动时间：用于区分“启动阶段的短暂 pause”与“用户把应用切到后台”
         self._startup_ts = time.time()
+
+        # 兜底：若 build 阶段的延迟初始化未触发，则在 on_start 再触发一次
+        Clock.schedule_once(self._init_screens, 0)
+
+        # 启动后延迟保存一次诊断文件（给生命周期事件留时间）
+        Clock.schedule_once(self._diag_save, 8)
+
 
 
         # 不允许后台运行：用户关闭/返回时提示并直接退出；应用进入后台时也不保持运行
@@ -171,11 +270,12 @@ class AttendanceApp(App):
         但华为/鸿蒙等机型在“刚启动”的几秒内可能会触发一次短暂 pause，
         如果直接 return False 会导致“点开就回桌面”。
 
-        策略：启动后 5 秒内的 pause 视为系统抖动，允许（return True）；
-        5 秒后如果进入后台，则直接结束应用（return False）。
+        策略：启动后 10 秒内的 pause 视为系统抖动，允许（return True）；
+        10 秒后如果进入后台，则直接结束应用（return False）。
         """
+        self._diag_event('on_pause')
         try:
-            if time.time() - getattr(self, '_startup_ts', 0) < 5:
+            if time.time() - getattr(self, '_startup_ts', 0) < 10:
                 return True
         except Exception:
             return True
@@ -183,9 +283,11 @@ class AttendanceApp(App):
 
 
 
+
     
     def on_resume(self):
         """应用恢复时调用（移动端）"""
+        self._diag_event('on_resume')
         try:
             main_screen = self.sm.get_screen('main')
             main_screen.evaluate_auto_mode()
@@ -194,9 +296,12 @@ class AttendanceApp(App):
 
 
 
+
     def on_request_close(self, *args):
+        self._diag_event('on_request_close')
         if getattr(self, '_force_close', False):
             return False
+
         if getattr(self, '_exit_popup', None):
             return True
 
@@ -266,11 +371,14 @@ class AttendanceApp(App):
 
         if popup:
             popup.dismiss()
+        self._diag_event('confirm_exit')
+        self._diag_save()
         self._force_close = True
         try:
             self.stop()
         finally:
             os._exit(0)
+
 
 
 
