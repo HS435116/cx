@@ -40,6 +40,8 @@ from kivy.core.window import Window
 from kivy.metrics import dp
 from kivy.utils import platform as kivy_platform
 from kivy.clock import Clock
+from kivy.logger import Logger
+
 
 
 
@@ -69,8 +71,15 @@ class AttendanceApp(App):
                 'event': event_name,
                 'data': data,
             })
+
+            # 同步输出到 logcat（release 包也能抓到），避免 /Android/data 在部分 ROM 上不可见
+            try:
+                Logger.info(f"DIAG t=+{round(ts, 3)} {event_name} data={data}")
+            except Exception:
+                pass
         except Exception:
             pass
+
 
     def _diag_save(self, *_):
         try:
@@ -87,8 +96,14 @@ class AttendanceApp(App):
             }
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
+
+            try:
+                Logger.info(f"DIAG saved {path}")
+            except Exception:
+                pass
         except Exception:
             pass
+
 
     def _log_exception(self, where: str):
         """把启动异常写入本地文件，方便在手机上定位“点开就回桌面/像进后台”的问题。"""
@@ -100,9 +115,16 @@ class AttendanceApp(App):
                 f.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] {where}\n")
                 f.write(traceback.format_exc())
                 f.write("\n")
+
+            # 同步输出到 logcat（release 包也能抓到）
+            try:
+                Logger.error(f"STARTUP {where}: {traceback.format_exc()}")
+            except Exception:
+                pass
         except Exception:
             # 日志写入失败时忽略（避免二次异常）
             pass
+
 
     def _build_fallback_error_view(self):
         content = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(20))
