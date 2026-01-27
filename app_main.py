@@ -79,16 +79,13 @@ class AttendanceApp(App):
         Window.bind(on_keyboard=self.on_keyboard)
 
 
-        # 移动端无边框全屏，桌面端模拟移动端尺寸
+
+
+        # 移动端：不强制全屏/不强制 Window.show。
+        # 部分机型（如部分华为系统）在启动时强制全屏/强制 show 可能触发异常的 pause/resume，
+        # 表现为“点击后立刻回到桌面/像进入后台”。
         from kivy.utils import platform as kivy_platform
-        if kivy_platform in ('android', 'ios'):
-            Window.fullscreen = True
-            # 某些机型/启动场景下窗口可能未正确展示，显式调用 show 以确保前台可见
-            try:
-                Window.show()
-            except Exception:
-                pass
-        else:
+        if kivy_platform not in ('android', 'ios'):
             Window.size = (360, 640)
 
         # 初始化默认管理员账号（仅开发环境）
@@ -99,29 +96,23 @@ class AttendanceApp(App):
             except Exception:
                 pass
 
-        # 启动后强制拉起前台并切回登录页（防止某些机型启动瞬间失焦导致看起来“进后台”）
-        Clock.schedule_once(self._ensure_foreground_and_login, 0)
-        Clock.schedule_once(self._ensure_foreground_and_login, 0.5)
-
         # 发布版不在运行时“清理文件”，避免误删导致异常
         # 如需清理，请在构建/发布流程中处理
 
 
 
 
+
     
     def _ensure_foreground_and_login(self, *args):
-        # 启动后尽量确保应用在前台可见（部分机型启动瞬间失焦会像“进后台”）
-        if kivy_platform in ('android', 'ios'):
-            try:
-                Window.show()
-            except Exception:
-                pass
+        # 兼容保留：只做界面切换，不做 Window.show/强制拉前台。
+        # 如需在特定机型上拉前台，应通过 Android 端 Activity 处理。
         try:
             if getattr(self, 'sm', None):
                 self.sm.current = 'login'
         except Exception:
             pass
+
 
 
     def on_keyboard(self, window, key, scancode, codepoint, modifiers):
@@ -134,9 +125,13 @@ class AttendanceApp(App):
     def on_pause(self):
         """应用暂停时调用（移动端）
 
-        不允许后台运行：当应用进入后台（如按 Home/切换应用）时，不保持进程运行。
+        注意：部分机型在启动阶段可能会短暂触发 pause/resume。
+        若这里返回 False，会导致应用被系统直接关闭，表现为“点击后立刻回到桌面/像进入后台”。
+
+        因此这里返回 True，让系统允许暂停；真正的“退出”统一由返回键/关闭按钮的确认弹窗处理。
         """
-        return False
+        return True
+
 
     
     def on_resume(self):
