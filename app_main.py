@@ -9,7 +9,13 @@
 
 
 import os
+import time
+import traceback
+from datetime import datetime
+
+
 from kivy.config import Config
+
 from kivy.resources import resource_add_path
 
 # 设置默认中文字体（必须在导入其他Kivy模块前设置）
@@ -42,37 +48,73 @@ from main import db
 
 class AttendanceApp(App):
     """打卡应用主类"""
-    
+
+    def _log_exception(self, where: str):
+        """把启动异常写入本地文件，方便在手机上定位“点开就回桌面/像进后台”的问题。"""
+        try:
+            log_dir = getattr(self, 'user_data_dir', None) or os.getcwd()
+            log_path = os.path.join(log_dir, 'startup_error.log')
+            with open(log_path, 'a', encoding='utf-8') as f:
+                f.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] {where}\n")
+                f.write(traceback.format_exc())
+                f.write("\n")
+        except Exception:
+            # 日志写入失败时忽略（避免二次异常）
+            pass
+
     def build(self):
-        """构建应用界面"""
+        """构建应用界面
+
+        华为/鸿蒙部分机型上如果启动阶段抛异常，通常表现为“点开后立刻回到桌面/像进入后台”。
+        这里做兜底：捕获异常并显示一个错误页，同时把 traceback 写入 startup_error.log。
+        """
         self.title = "晨曦智能打卡"
         self.app_version = "1.1.0"
-        
-        # 创建屏幕管理器
-        self.sm = ScreenManager()
 
-        
-        # 添加登录屏幕（从第一部分导入）
-        from main import LoginScreen, RegisterScreen
-        self.sm.add_widget(LoginScreen(name='login'))
-        self.sm.add_widget(RegisterScreen(name='register'))
+        try:
+            # 创建屏幕管理器
+            self.sm = ScreenManager()
 
-        # 添加主功能屏幕
-        self.sm.add_widget(MainScreen(name='main'))
-        self.sm.add_widget(SettingsScreen(name='settings'))
-        self.sm.add_widget(AdminScreen(name='admin'))
-        self.sm.add_widget(UserSearchScreen(name='user_search'))
-        self.sm.add_widget(AdManagerScreen(name='ad_manager'))
+            # 添加登录屏幕（从第一部分导入）
+            from main import LoginScreen, RegisterScreen
+            self.sm.add_widget(LoginScreen(name='login'))
+            self.sm.add_widget(RegisterScreen(name='register'))
 
-        # 确保启动后首先显示登录页（尤其是移动端，避免启动后直接回到桌面）
-        self.sm.current = 'login'
+            # 添加主功能屏幕
+            self.sm.add_widget(MainScreen(name='main'))
+            self.sm.add_widget(SettingsScreen(name='settings'))
+            self.sm.add_widget(AdminScreen(name='admin'))
+            self.sm.add_widget(UserSearchScreen(name='user_search'))
+            self.sm.add_widget(AdManagerScreen(name='ad_manager'))
 
-        return self.sm
+            # 确保启动后首先显示登录页
+            self.sm.current = 'login'
+
+            return self.sm
+        except Exception:
+            self._log_exception('build() failed')
+
+            # 极简错误页（尽量不依赖复杂组件）
+            content = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(20))
+            content.add_widget(Label(text='应用启动失败', font_size=dp(20), color=(1, 1, 1, 1)))
+            content.add_widget(Label(
+                text='请将手机连接电脑，用 adb logcat 查看错误，或在应用数据目录中查找 startup_error.log。',
+                halign='left', valign='top', color=(0.9, 0.95, 1, 1)
+            ))
+            btn = Button(text='退出', size_hint=(1, None), height=dp(44), background_color=(0.8, 0.2, 0.2, 1))
+            btn.bind(on_press=lambda *_: self.confirm_exit(None))
+            content.add_widget(btn)
+            return content
+
     
     def on_start(self):
         """应用启动时调用"""
         # 设置窗口背景色（#11264F）
         Window.clearcolor = (0.0667, 0.149, 0.3098, 1)
+
+        # 记录启动时间：用于区分“启动阶段的短暂 pause”与“用户把应用切到后台”
+        self._startup_ts = time.time()
+
 
         # 不允许后台运行：用户关闭/返回时提示并直接退出；应用进入后台时也不保持运行
         Window.bind(on_request_close=self.on_request_close)
@@ -125,27 +167,31 @@ class AttendanceApp(App):
     def on_pause(self):
         """应用暂停时调用（移动端）
 
-        注意：部分机型在启动阶段可能会短暂触发 pause/resume。
-        若这里返回 False，会导致应用被系统直接关闭，表现为“点击后立刻回到桌面/像进入后台”。
+        目标：不允许长期后台运行。
+        但华为/鸿蒙等机型在“刚启动”的几秒内可能会触发一次短暂 pause，
+        如果直接 return False 会导致“点开就回桌面”。
 
-        因此这里返回 True，让系统允许暂停；真正的“退出”统一由返回键/关闭按钮的确认弹窗处理。
+        策略：启动后 5 秒内的 pause 视为系统抖动，允许（return True）；
+        5 秒后如果进入后台，则直接结束应用（return False）。
         """
-        return True
+        try:
+            if time.time() - getattr(self, '_startup_ts', 0) < 5:
+                return True
+        except Exception:
+            return True
+        return False
+
 
 
     
     def on_resume(self):
         """应用恢复时调用（移动端）"""
         try:
-            Window.show()
-        except Exception:
-            pass
-
-        try:
             main_screen = self.sm.get_screen('main')
             main_screen.evaluate_auto_mode()
         except Exception:
             pass
+
 
 
     def on_request_close(self, *args):
