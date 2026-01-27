@@ -825,13 +825,10 @@ class LoginScreen(Screen):
         popup.open()
 
 
-# buildozer 默认入口通常是 main.py。为了避免移动端安装后点击图标直接退回桌面，
-# 这里提供一个兜底启动逻辑：当 main.py 作为入口脚本执行时，启动 app_main.AttendanceApp。
-if __name__ == '__main__':
-    from app_main import AttendanceApp
-    AttendanceApp().run()
+
 
 class RegisterScreen(Screen):
+
     """注册界面"""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -1072,8 +1069,46 @@ class RegisterScreen(Screen):
         popup.open()
 
 
+
+
 # buildozer 默认入口通常是 main.py。为了避免移动端安装后点击图标直接退回桌面，
 # 这里提供一个兜底启动逻辑：当 main.py 作为入口脚本执行时，启动 app_main.AttendanceApp。
 if __name__ == '__main__':
-    from app_main import AttendanceApp
-    AttendanceApp().run()
+    import os
+    import sys
+    import traceback
+
+    # python-for-android 环境下，应用源码通常位于：$ANDROID_PRIVATE/app
+    private = os.environ.get('ANDROID_PRIVATE') or os.environ.get('ANDROID_ARGUMENT') or ''
+    if private:
+        candidate = os.path.join(private, 'app')
+        if os.path.isdir(candidate) and candidate not in sys.path:
+            sys.path.insert(0, candidate)
+
+    try:
+        from app_main import AttendanceApp
+        AttendanceApp().run()
+    except Exception:
+        # 不要静默：把根因打印到 logcat，便于 adb 抓取
+        try:
+            from kivy.logger import Logger
+            Logger.error(f"STARTUP main.py bootstrap failed: {traceback.format_exc()}")
+        except Exception:
+            pass
+
+        # 兜底显示错误页（避免“点开就回桌面”）
+        try:
+            from kivy.app import App
+            from kivy.uix.label import Label
+
+            msg = traceback.format_exc()
+            if len(msg) > 1500:
+                msg = msg[-1500:]
+
+            class _BootFail(App):
+                def build(self):
+                    return Label(text='启动失败\n\n' + msg)
+
+            _BootFail().run()
+        except Exception:
+            raise

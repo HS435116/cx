@@ -9,6 +9,14 @@ import sys
 # 添加当前目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# python-for-android 环境下，应用源码通常位于：$ANDROID_PRIVATE/app
+private = os.environ.get('ANDROID_PRIVATE') or os.environ.get('ANDROID_ARGUMENT') or ''
+if private:
+    candidate = os.path.join(private, 'app')
+    if os.path.isdir(candidate) and candidate not in sys.path:
+        sys.path.insert(0, candidate)
+
+
 # 移动端环境变量设置
 os.environ['KIVY_NO_CONSOLELOG'] = '1'
 os.environ['KIVY_WINDOW'] = 'sdl2'
