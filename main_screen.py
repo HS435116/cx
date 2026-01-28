@@ -683,33 +683,142 @@ class MainScreen(Screen):
     
     def start_gps(self, dt):
 
-        """启动GPS获取位置"""
+        """启动GPS获取位置（移动端）。
+
+        兼容点：
+        - Android 需要运行时授权定位权限，否则不会回调。
+        - plyer 回调的 lat/lon 可能是字符串，需转 float。
+        - 部分机型首次定位较慢，增加超时提示与一次重试。
+        """
         if kivy_platform in ('win', 'macosx', 'linux'):
             self.location_label.text = "位置: 桌面端不支持GPS"
             return
 
-        try:
-            if not self.gps_enabled:
-                gps.configure(on_location=self.on_location)
-                gps.start()
-                self.gps_enabled = True
-        except Exception as e:
-            print(f"GPS启动失败: {e}")
-            self.location_label.text = "位置: GPS不可用"
+        self.location_label.text = "位置: 正在定位..."
 
-    
+        if not self._ensure_location_permission():
+            return
+
+        self._start_gps_stream()
+
+
+    def _ensure_location_permission(self) -> bool:
+        if kivy_platform != 'android':
+            return True
+        try:
+            from android.permissions import request_permissions, Permission, check_permission
+        except Exception:
+            # 在少数环境里该模块可能不可用；此时只能尝试直接启动
+            return True
+
+        perms = [Permission.ACCESS_FINE_LOCATION, Permission.ACCESS_COARSE_LOCATION]
+        missing = [p for p in perms if not check_permission(p)]
+        if not missing:
+            return True
+
+        def _cb(_perms, grants):
+            granted = all(bool(x) for x in grants)
+            if granted:
+                # 授权后立即再启动一次 GPS
+                self.location_label.text = "位置: 正在定位..."
+                Clock.schedule_once(lambda _dt: self.start_gps(0), 0)
+            else:
+                self.location_label.text = "位置: 未授权定位权限"
+                try:
+                    self.show_popup('权限提示', '请在系统设置中允许定位权限后再使用自动定位。')
+                except Exception:
+                    pass
+
+        try:
+            request_permissions(missing, _cb)
+        except Exception:
+            return True
+        return False
+
+
+    def _start_gps_stream(self):
+        try:
+            if not hasattr(self, '_gps_retry_done'):
+                self._gps_retry_done = False
+
+            if not self.gps_enabled:
+                try:
+                    gps.configure(on_location=self.on_location, on_status=self.on_gps_status)
+                except TypeError:
+                    gps.configure(on_location=self.on_location)
+
+                try:
+                    gps.start(minTime=1000, minDistance=0)
+                except TypeError:
+                    gps.start()
+
+                self.gps_enabled = True
+
+            # 首次定位超时提示
+            Clock.unschedule(self._gps_first_fix_timeout)
+            Clock.schedule_once(self._gps_first_fix_timeout, 8)
+        except Exception as e:
+            self.location_label.text = "位置: GPS启动失败"
+            try:
+                self.show_popup('定位失败', f'GPS启动失败: {e}')
+            except Exception:
+                pass
+
+
+    def on_gps_status(self, stype, status):
+        # stype/status 的具体值因系统实现不同；这里仅做友好提示
+        try:
+            st = str(status)
+            if 'disabled' in st.lower() or 'off' in st.lower():
+                self.location_label.text = '位置: 定位服务未开启'
+        except Exception:
+            pass
+
+
+    def _gps_first_fix_timeout(self, _dt):
+        if self.current_location:
+            return
+
+        # 首次定位未返回：提示用户检查系统定位
+        self.location_label.text = "位置: 未获取到定位，请检查系统定位/GPS已开启"
+
+        # 只重试一次，避免死循环
+        if getattr(self, '_gps_retry_done', False):
+            return
+
+        self._gps_retry_done = True
+        try:
+            gps.stop()
+        except Exception:
+            pass
+        self.gps_enabled = False
+        Clock.schedule_once(lambda dt: self._start_gps_stream(), 0.6)
+
+
     def on_location(self, **kwargs):
         """GPS位置回调"""
-        lat = kwargs.get('lat')
-        lon = kwargs.get('lon')
-        
-        if lat and lon:
-            self.current_location = {
-                'latitude': lat,
-                'longitude': lon
-            }
-            self.location_label.text = f"位置: {lat:.6f}, {lon:.6f}"
-            self.evaluate_auto_mode()
+        try:
+            lat = kwargs.get('lat', None)
+            lon = kwargs.get('lon', None)
+            if lat is None:
+                lat = kwargs.get('latitude', None)
+            if lon is None:
+                lon = kwargs.get('longitude', None)
+            if lat is None or lon is None:
+                return
+
+            lat_f = float(lat)
+            lon_f = float(lon)
+        except Exception:
+            return
+
+        self.current_location = {
+            'latitude': lat_f,
+            'longitude': lon_f
+        }
+        self.location_label.text = f"位置: {lat_f:.6f}, {lon_f:.6f}"
+        self.evaluate_auto_mode()
+
 
     
     def calculate_distance(self, lat1, lon1, lat2, lon2):
