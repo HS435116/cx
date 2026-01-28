@@ -24,6 +24,11 @@ source.include_exts = py,png,jpg,kv,atlas,json,ttf,ico
 # (list) List of inclusions using pattern matching
 #source.include_patterns = assets/*,images/*.png
 
+# IMPORTANT: Exclude setup.py from the packaged app sources.
+# Even with p4a's --ignore-setup-py, having a setup.py inside the app source dir may lead to assets/private.tar
+# containing only main.pyc (missing other modules like app_main.py) and crashing on import.
+source.exclude_patterns = setup.py
+
 # (list) Source files to exclude (let empty to not exclude anything)
 #source.exclude_exts = spec
 
