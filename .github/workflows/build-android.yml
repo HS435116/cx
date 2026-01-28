@@ -189,6 +189,46 @@ jobs:
 
           ls -la bin
 
+      - name: Verify APK contains app sources
+        if: github.event_name != 'pull_request'
+        run: |
+          set -e
+
+          echo "---- workspace *.py ----"
+          ls -la *.py || true
+
+          APK="bin/晨曦智能打卡.apk"
+          if [ ! -f "$APK" ]; then
+            APK=$(ls -1 bin/*.apk 2>/dev/null | head -n 1 || true)
+          fi
+
+          echo "Verifying APK=$APK"
+          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
+            echo "ERROR: APK not found for verification" >&2
+            ls -la bin || true
+            exit 1
+          fi
+
+          rm -f private.tar
+          unzip -p "$APK" assets/private.tar > private.tar
+
+          echo "private.tar top entries:"
+          tar -tf private.tar | head -n 80 || true
+
+          echo "private.tar python entries (first 120):"
+          tar -tf private.tar | grep -Ei "\\.(py|pyc)$" | head -n 120 || true
+
+          echo "Check for app_main in private.tar:"
+          if tar -tf private.tar | grep -qi "app_main"; then
+            echo "OK: app_main present"
+          else
+            echo "ERROR: app_main missing in assets/private.tar (APK will crash on import)" >&2
+            echo "---- private.tar full list head ----"
+            tar -tf private.tar | head -n 300 || true
+            exit 1
+          fi
+
+
       - name: Build Debug (PR without secrets)
         if: github.event_name == 'pull_request'
         run: |
