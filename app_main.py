@@ -450,15 +450,28 @@ class AttendanceApp(App):
             self.sm = ScreenManager()
 
             loading = Screen(name='loading')
-            content = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(24))
-            content.add_widget(Label(text='晨曦智能打卡', font_size=dp(22), bold=True, color=(1, 1, 1, 1)))
-            content.add_widget(Label(text='正在加载，请稍候…', font_size=dp(14), color=(0.9, 0.95, 1, 1)))
+            content = BoxLayout(orientation='vertical', spacing=dp(10), padding=[dp(16), dp(16), dp(16), dp(16)])
 
-            log_dir = self._get_diag_dir()
-            content.add_widget(Label(text=f'日志目录：{log_dir}', font_size=dp(11), color=(0.75, 0.85, 1, 1)))
+            content.add_widget(Label(
+                text='晨曦智能打卡',
+                font_size=dp(22),
+                bold=True,
+                color=(1, 1, 1, 1),
+                size_hint=(1, None),
+                height=dp(40),
+            ))
 
+            # 启动加载页：显示“中国地图”背景，不显示“正在加载/日志目录”
+            try:
+                from kivy.uix.image import Image
+                map_path = os.path.join(os.path.dirname(__file__), 'assets', 'presplash.png')
+                if os.path.exists(map_path):
+                    content.add_widget(Image(source=map_path, allow_stretch=True, keep_ratio=True))
+            except Exception:
+                pass
 
             loading.add_widget(content)
+
 
             self.sm.add_widget(loading)
             self.sm.current = 'loading'

@@ -10,7 +10,9 @@
 
 import json
 import calendar
+import time
 from datetime import datetime, time as dt_time, timedelta
+
 
 
 from kivy.app import App
@@ -757,6 +759,10 @@ class MainScreen(Screen):
             # 首次定位超时提示
             Clock.unschedule(self._gps_first_fix_timeout)
             Clock.schedule_once(self._gps_first_fix_timeout, 8)
+
+            # 兜底：部分机型 plyer.gps 不回调，用 Android 原生 lastKnownLocation 周期性补偿
+            self._start_android_location_fallback()
+
         except Exception as e:
             self.location_label.text = "位置: GPS启动失败"
             try:
@@ -782,6 +788,19 @@ class MainScreen(Screen):
         # 首次定位未返回：提示用户检查系统定位
         self.location_label.text = "位置: 未获取到定位，请检查系统定位/GPS已开启"
 
+        # 机型提示（只提示一次）
+        if not getattr(self, '_location_help_shown', False):
+            hint = self._get_device_location_hint()
+            if hint:
+                self._location_help_shown = True
+                try:
+                    self.show_popup('定位提示', hint)
+                except Exception:
+                    pass
+
+        # 兜底：继续启用 Android 原生位置轮询
+        self._start_android_location_fallback()
+
         # 只重试一次，避免死循环
         if getattr(self, '_gps_retry_done', False):
             return
@@ -793,6 +812,7 @@ class MainScreen(Screen):
             pass
         self.gps_enabled = False
         Clock.schedule_once(lambda dt: self._start_gps_stream(), 0.6)
+
 
 
     def on_location(self, **kwargs):
@@ -812,16 +832,150 @@ class MainScreen(Screen):
         except Exception:
             return
 
-        self.current_location = {
-            'latitude': lat_f,
-            'longitude': lon_f
-        }
-        self.location_label.text = f"位置: {lat_f:.6f}, {lon_f:.6f}"
-        self.evaluate_auto_mode()
+        self._gps_last_fix_ts = time.time()
+        self._apply_location(lat_f, lon_f, source='plyer')
+
+
+    def _apply_location(self, lat: float, lon: float, source: str = ''):
+        try:
+            self.current_location = {
+                'latitude': float(lat),
+                'longitude': float(lon)
+            }
+            self.location_label.text = f"位置: {float(lat):.6f}, {float(lon):.6f}"
+        except Exception:
+            return
+
+        try:
+            self.evaluate_auto_mode()
+        except Exception:
+            pass
+
+
+    def _get_android_device_profile(self):
+        if getattr(self, '_device_profile', None) is not None:
+            return self._device_profile
+
+        self._device_profile = {}
+        if kivy_platform != 'android':
+            return self._device_profile
+
+        try:
+            from jnius import autoclass
+            Build = autoclass('android.os.Build')
+            VERSION = autoclass('android.os.Build$VERSION')
+            self._device_profile = {
+                'manufacturer': str(getattr(Build, 'MANUFACTURER', '') or ''),
+                'brand': str(getattr(Build, 'BRAND', '') or ''),
+                'model': str(getattr(Build, 'MODEL', '') or ''),
+                'sdk': int(getattr(VERSION, 'SDK_INT', 0) or 0),
+            }
+        except Exception:
+            self._device_profile = {}
+
+        return self._device_profile
+
+
+    def _get_device_location_hint(self) -> str:
+        p = self._get_android_device_profile() or {}
+        m = (p.get('manufacturer') or '').lower()
+        b = (p.get('brand') or '').lower()
+        model = (p.get('model') or '').strip()
+
+        tag = m or b
+        if any(x in tag for x in ('huawei', 'honor')):
+            return f"当前机型：{model or '华为/荣耀'}\n建议：定位模式选“高精度/使用WLAN和移动网络”，并在电池/后台管理里允许本应用后台运行与定位。"
+        if any(x in tag for x in ('xiaomi', 'redmi', 'poco')):
+            return f"当前机型：{model or '小米/红米'}\n建议：开启“精确位置”，允许后台定位，并在省电策略中将本应用设为“不限制”。"
+        if any(x in tag for x in ('oppo', 'realme', 'oneplus')):
+            return f"当前机型：{model or 'OPPO/一加/realme'}\n建议：允许后台定位/自启动，关闭省电限制，并确认系统定位服务为开启状态。"
+        if 'vivo' in tag:
+            return f"当前机型：{model or 'vivo'}\n建议：允许后台定位/自启动，关闭省电限制，并确认系统定位服务为开启状态。"
+        return (f"当前机型：{model}" if model else '')
+
+
+    def _start_android_location_fallback(self):
+        if kivy_platform != 'android':
+            return
+
+        if getattr(self, '_android_loc_ev', None):
+            return
+
+        self._android_loc_ev = Clock.schedule_interval(self._android_location_fallback_tick, 2.0)
+        Clock.schedule_once(self._android_location_fallback_tick, 0)
+
+
+    def _stop_android_location_fallback(self):
+        ev = getattr(self, '_android_loc_ev', None)
+        if ev:
+            try:
+                ev.cancel()
+            except Exception:
+                pass
+        self._android_loc_ev = None
+
+
+    def _android_location_fallback_tick(self, _dt):
+        if kivy_platform != 'android':
+            return
+
+        # 若 plyer 最近已拿到定位，则停止兜底轮询，减少耗电
+        last_fix = getattr(self, '_gps_last_fix_ts', 0) or 0
+        if last_fix and (time.time() - last_fix) < 6:
+            self._stop_android_location_fallback()
+            return
+
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Context = autoclass('android.content.Context')
+            LocationManager = autoclass('android.location.LocationManager')
+
+            activity = PythonActivity.mActivity
+            lm = activity.getSystemService(Context.LOCATION_SERVICE)
+
+            providers = [
+                LocationManager.GPS_PROVIDER,
+                LocationManager.NETWORK_PROVIDER,
+                LocationManager.PASSIVE_PROVIDER,
+            ]
+
+            best = None
+            for p in providers:
+                try:
+                    if not lm.isProviderEnabled(p):
+                        continue
+                    loc = lm.getLastKnownLocation(p)
+                    if loc is None:
+                        continue
+                    if best is None:
+                        best = loc
+                    else:
+                        try:
+                            if float(loc.getAccuracy()) <= float(best.getAccuracy()):
+                                best = loc
+                        except Exception:
+                            best = loc
+                except Exception:
+                    continue
+
+            if best is None:
+                return
+
+            lat = float(best.getLatitude())
+            lon = float(best.getLongitude())
+            if lat == 0.0 and lon == 0.0:
+                return
+
+            self._gps_last_fix_ts = time.time()
+            self._apply_location(lat, lon, source='android')
+        except Exception:
+            return
 
 
     
     def calculate_distance(self, lat1, lon1, lat2, lon2):
+
         """计算两个坐标之间的距离（公里）"""
         # 地球半径（公里）
         R = 6371.0
