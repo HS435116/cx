@@ -189,13 +189,50 @@ jobs:
 
           ls -la bin
 
-      - name: Verify APK contains app sources
+      - name: Inspect Buildozer staging (debug)
         if: github.event_name != 'pull_request'
         run: |
           set -e
 
           echo "---- workspace *.py ----"
           ls -la *.py || true
+
+          echo "---- buildozer.spec (key lines) ----"
+          sed -n '1,120p' buildozer.spec || true
+
+          echo "---- .buildozer tree (dirs, depth 4) ----"
+          find .buildozer -maxdepth 4 -type d -print || true
+
+          echo "---- Possible source staging dirs ----"
+          if [ -d .buildozer/android/app ]; then
+            echo "FOUND: .buildozer/android/app"
+            ls -la .buildozer/android/app || true
+            echo "files (maxdepth 2):"
+            find .buildozer/android/app -maxdepth 2 -type f -print | head -n 220 || true
+          else
+            echo "NOT FOUND: .buildozer/android/app"
+          fi
+
+          echo "---- Find dists/*/private dirs ----"
+          PRIVS=$(find .buildozer -maxdepth 10 -type d -name private 2>/dev/null | head -n 6 || true)
+          echo "$PRIVS" || true
+          for p in $PRIVS; do
+            echo "-- private dir: $p --"
+            find "$p" -maxdepth 2 -type f -print | head -n 220 || true
+          done
+
+          echo "---- Find private.tar produced by p4a (inside .buildozer) ----"
+          PRT=$(find .buildozer -maxdepth 12 -type f -name private.tar 2>/dev/null | head -n 6 || true)
+          echo "$PRT" || true
+          for t in $PRT; do
+            echo "-- tar: $t (head 120) --"
+            tar -tf "$t" | head -n 120 || true
+          done
+
+      - name: Verify APK contains app sources
+        if: github.event_name != 'pull_request'
+        run: |
+          set -e
 
           APK="bin/晨曦智能打卡.apk"
           if [ ! -f "$APK" ]; then
@@ -227,6 +264,7 @@ jobs:
             tar -tf private.tar | head -n 300 || true
             exit 1
           fi
+
 
 
       - name: Build Debug (PR without secrets)
