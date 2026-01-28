@@ -9,12 +9,31 @@ import sys
 # 添加当前目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# python-for-android 环境下，应用源码通常位于：$ANDROID_PRIVATE/app
-private = os.environ.get('ANDROID_PRIVATE') or os.environ.get('ANDROID_ARGUMENT') or ''
-if private:
-    candidate = os.path.join(private, 'app')
-    if os.path.isdir(candidate) and candidate not in sys.path:
-        sys.path.insert(0, candidate)
+def _add_path(p: str):
+    if not p:
+        return
+    try:
+        if os.path.isdir(p) and p not in sys.path:
+            sys.path.insert(0, p)
+    except Exception:
+        pass
+
+# python-for-android 环境下，应用源码通常位于：<filesDir>/app
+private = os.environ.get('ANDROID_PRIVATE') or ''
+argument = os.environ.get('ANDROID_ARGUMENT') or ''
+_add_path(os.path.join(private, 'app'))
+_add_path(os.path.join(argument, 'app'))
+
+# Activity.getFilesDir() 兜底（在部分 ROM 上 ANDROID_PRIVATE 可能为空）
+try:
+    from jnius import autoclass
+    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+    act = PythonActivity.mActivity
+    files_dir = str(act.getFilesDir().getAbsolutePath())
+    _add_path(os.path.join(files_dir, 'app'))
+except Exception:
+    pass
+
 
 
 # 移动端环境变量设置

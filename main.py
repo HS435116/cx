@@ -1078,12 +1078,42 @@ if __name__ == '__main__':
     import sys
     import traceback
 
-    # python-for-android 环境下，应用源码通常位于：$ANDROID_PRIVATE/app
-    private = os.environ.get('ANDROID_PRIVATE') or os.environ.get('ANDROID_ARGUMENT') or ''
-    if private:
-        candidate = os.path.join(private, 'app')
-        if os.path.isdir(candidate) and candidate not in sys.path:
-            sys.path.insert(0, candidate)
+    def _add_path(p: str, tag: str = ''):
+        if not p:
+            return
+        try:
+            if os.path.isdir(p) and p not in sys.path:
+                sys.path.insert(0, p)
+                try:
+                    from kivy.logger import Logger
+                    Logger.info(f"STARTUP sys.path + {p} ({tag})")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # 1) 先用环境变量（p4a 常见）
+    private = os.environ.get('ANDROID_PRIVATE') or ''
+    argument = os.environ.get('ANDROID_ARGUMENT') or ''
+    _add_path(os.path.join(private, 'app'), 'ANDROID_PRIVATE/app')
+    _add_path(os.path.join(argument, 'app'), 'ANDROID_ARGUMENT/app')
+
+    # 2) 再用 Activity.getFilesDir() 推导（最稳）
+    try:
+        from jnius import autoclass
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        act = PythonActivity.mActivity
+        files_dir = str(act.getFilesDir().getAbsolutePath())
+        _add_path(os.path.join(files_dir, 'app'), 'Activity.getFilesDir/app')
+    except Exception:
+        pass
+
+    # 3) 兜底：如果 cwd 本身就是 app 目录
+    try:
+        _add_path(os.getcwd(), 'cwd')
+    except Exception:
+        pass
+
 
     try:
         from app_main import AttendanceApp
