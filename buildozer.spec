@@ -12,8 +12,10 @@ package.domain = com.chenxiAI.attendance
 # (str) Source code where the main.py live
 source.dir = .
 
-# (str) Application entry point (default is main.py). For mobile, use the optimized launcher.
-entrypoint = mobile_launcher.py
+# (str) Application entry point (default is main.py).
+# IMPORTANT: Do not override entrypoint here. Some buildozer/p4a combinations may only package the entrypoint file,
+# which would cause other modules (e.g. app_main.py) to be missing from assets/private.tar and crash on import.
+#entrypoint = main.py
 
 
 # (list) Source files to include (let empty to include all the files)

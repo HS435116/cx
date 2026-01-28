@@ -352,10 +352,23 @@ class AttendanceApp(App):
         def _import_worker():
             self._diag_event('init_import_thread_start')
             try:
-                from main import LoginScreen, RegisterScreen
+                # 当 main.py 作为入口脚本在 Android 上运行时，它的顶层定义在 __main__ 模块里。
+                # 直接 import main 会导致同一份代码被二次执行（__main__ 与 main 各一遍），可能引发副作用。
+                # 因此：优先从 __main__ 取登录/注册页；取不到再回退 import main。
+                try:
+                    import __main__ as _mainmod
+                except Exception:
+                    _mainmod = None
+
+                LoginScreen = getattr(_mainmod, 'LoginScreen', None) if _mainmod else None
+                RegisterScreen = getattr(_mainmod, 'RegisterScreen', None) if _mainmod else None
+                if LoginScreen is None or RegisterScreen is None:
+                    from main import LoginScreen, RegisterScreen
+
                 from main_screen import MainScreen
                 from settings_screen import SettingsScreen
                 from admin_screen import AdminScreen, AdManagerScreen, UserSearchScreen
+
 
                 self._imported_screens = {
                     'LoginScreen': LoginScreen,
